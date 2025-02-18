@@ -9,5 +9,7 @@ namespace VerifiWorker
     public class ProcessorOptions
     {
         public bool MultiLane { get; set; }
+        public bool EnableLegacy { get; set; }
+        public bool IsMetric { get; set; }
     }
 }

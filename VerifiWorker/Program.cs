@@ -14,12 +14,16 @@ try
     builder.Services.Configure<VerifiConnectorOptions>(
         builder.Configuration.GetSection(
             key: nameof(VerifiConnectorOptions)));
+    builder.Services.Configure<VerifiConnectorLegacyOptions>(
+        builder.Configuration.GetSection(
+            key: nameof(VerifiConnectorLegacyOptions)));
     builder.Services.AddSerilog((config) =>
     {
         config.ReadFrom.Configuration(builder.Configuration);
     });
     builder.Services.AddTransient<ArcherConnector>();
     builder.Services.AddTransient<VerifiConnector>();
+    builder.Services.AddTransient<VerifiConnectorLegacy>();
     builder.Services.AddSingleton<TicketTracker>();
 
     builder.Services.AddScheduler();

@@ -16,18 +16,21 @@ namespace VerifiWorker
         private readonly ProcessorOptions _options;
         private readonly ArcherConnector _archerConnector;
         private readonly VerifiConnector _verifiConnector;
+        private readonly VerifiConnectorLegacy _verifiConnectorLegacy;
         private readonly TicketTracker _ticketTracker;
         private readonly ILogger<Processor> _logger;
 
         public Processor(IOptions<ProcessorOptions> options,
             ArcherConnector archerConnector,
             VerifiConnector verifiConnector,
+            VerifiConnectorLegacy verifiConnectorLegacy,
             ILogger<Processor> logger,
             TicketTracker ticketTracker)
         {
             _options = options.Value;
             _archerConnector = archerConnector;
             _verifiConnector = verifiConnector;
+            _verifiConnectorLegacy = verifiConnectorLegacy;
             _logger = logger;
             _ticketTracker = ticketTracker;
         }
@@ -57,17 +60,46 @@ namespace VerifiWorker
                 else
                 {
                     _logger.LogDebug($"Skipping - Ticket: {ticket} Already Processed");
-                }                
+                }
+
+                if (!_ticketTracker.IsLegacyProcessed(ticket) && _options.EnableLegacy)
+                {
+                    var ticketResults = results.Where(x => x.TicketId == ticket).ToList();
+
+                    var legacyXml = SerializeXML(ticketResults, true);
+                    if (await _verifiConnectorLegacy.SendXMLTicket(legacyXml))
+                    {
+                        _logger.LogInformation($"Ticket: {ticket} legacy connector processing completed.");
+                        _ticketTracker.AddLegacyTicket(ticket);
+                    }
+                    else
+                    {
+                        _logger.LogError($"Unable to send ticket: {ticket} to verifi legacy connector.");
+                    }
+                }
+                else
+                {
+                    _logger.LogDebug($"Skipping - (Legacy API) Ticket: {ticket} Already Processed");
+                }
             }
 
 
         }
 
-        public string SerializeXML(List<ArcherResult> ticketData)
+        public string SerializeXML(List<ArcherResult> ticketData, bool isLegacy = false)
         {
+            var ticketUrl = "https://portal.verificoncrete.com/api/1.3/xml/ticket";
+            var typeUrl = "https://portal.verificoncrete.com/api/1.3/xml/common-types";
+
+            if (isLegacy)
+            {
+                ticketUrl = "https://portal.verificoncrete.com/api/1.4/xml/ticket";
+                typeUrl = "https://portal.verificoncrete.com/api/1.4/xml/common-types";
+            }
+
             var header = ticketData.FirstOrDefault();
             DispatchTicketData? dispatchTicket = null;
-            if (header != null) 
+            if (header != null)
             {
                 dispatchTicket = ExtractDispatchTicketData(header.DispatchTicket);
             }
@@ -76,19 +108,19 @@ namespace VerifiWorker
                 throw new Exception("Can't serialize without a header.");
             }
 
-            XNamespace nameSpace1 = "https://portal.verificoncrete.com/api/1.3/xml/ticket";
-            XNamespace nameSpace2 = "https://portal.verificoncrete.com/api/1.3/xml/common-types";
+            XNamespace nameSpace1 = ticketUrl;
+            XNamespace nameSpace2 = typeUrl;
             XName name1 = nameSpace1 + "verifi-ticket";
 
-            XElement rootElement = new XElement(name1, new XAttribute("xmlns", "https://portal.verificoncrete.com/api/1.3/xml/ticket"),
-                new XAttribute(XNamespace.Xmlns + "ns2", "https://portal.verificoncrete.com/api/1.3/xml/common-types"),
+            XElement rootElement = new XElement(name1, new XAttribute("xmlns", ticketUrl),
+                new XAttribute(XNamespace.Xmlns + "ns2", typeUrl),
                 new XAttribute("ticket-id", header.TicketId),
                 new XAttribute("order-id", dispatchTicket.OrderNumber),
                 new XAttribute("created", header.EndTimeUTC.ToLocalTime()));
-            
+
             XElement customerContent = new XElement(nameSpace1 + "customer",
                 new XAttribute("source-system-id", dispatchTicket.CustomerNubmer), header.Customer);
-            
+
             XElement jobContent = new XElement(nameSpace1 + "job",
                 new XElement(nameSpace1 + "name", dispatchTicket.Project),
                 new XElement(nameSpace1 + "address",
@@ -101,50 +133,52 @@ namespace VerifiWorker
                     new XAttribute("units", "m3")),
                 new XElement(nameSpace1 + "order-size", dispatchTicket.OrderSize,
                     new XAttribute("units", dispatchTicket.Uom)));
-            
+
             List<XAttribute> plantAttributes = new List<XAttribute>();
-            
+
             plantAttributes.Add(new XAttribute("source-system-id", dispatchTicket.PlantNumber));
             //Only needed for multiple lanes.
             if (_options.MultiLane)
             {
                 plantAttributes.Add(new XAttribute("sequence", header.DestinationId));
             }
-            
+
             XElement plantContent = new XElement(nameSpace1 + "plant", plantAttributes);
 
             XElement truckContent = new XElement(nameSpace1 + "truck", dispatchTicket.TruckNumber);
 
             XElement driverNameContent = new XElement(nameSpace1 + "driver",
                 new XAttribute("source-system-id", dispatchTicket.DriverNumber), dispatchTicket.DriverName);
-            
+
             XElement mixContent = new XElement(nameSpace1 + "mix",
                 new XElement(nameSpace1 + "mix-code", dispatchTicket.MixCode));
-            
+
             XElement loadsizeContent = new XElement(nameSpace1 + "load-size",
-                new XAttribute("units", GetArcherValue(header.LoadSize).Uom), GetArcherValue(header.LoadSize).Value);
-            
-            XElement slumpContent = new XElement(nameSpace1 + "target-slump", 
+                new XAttribute("units", GetArcherValue(header.LoadSize, _options.IsMetric).Uom), GetArcherValue(header.LoadSize, _options.IsMetric).Value);
+
+            //*** note slump units is currently hardcoded to mm.
+            XElement slumpContent = new XElement(nameSpace1 + "target-slump",
                 new XAttribute("units", "mm"), new XElement(nameSpace2 + "ordered", dispatchTicket.TargetSlump));
-            
+
             XElement batchStartContent = new XElement(nameSpace1 + "batch-start", header.StartTimeUTC.ToLocalTime());
-            
+
             XElement batchFinishContent = new XElement(nameSpace1 + "batch-finish-time", header.EndTimeUTC.ToLocalTime());
-            
+
             XElement allowedWaterContent = new XElement(nameSpace1 + "net-allowable-water",
-                new XAttribute("units", GetArcherValue(header.AllowedWater).Uom), GetArcherValue(header.AllowedWater).Value);
+                new XAttribute("units", GetArcherValue(header.AllowedWater, _options.IsMetric).Uom), GetArcherValue(header.AllowedWater, _options.IsMetric).Value);
 
             XElement materialMainContent = new XElement(nameSpace1 + "materials");
-            foreach(var item in ticketData)
+            foreach (var item in ticketData)
             {
                 materialMainContent.Add(new XElement(nameSpace1 + "material",
                     new XElement(nameSpace1 + "description", item.DispatchId),
-                    new XElement(nameSpace1 + "target-weight", GetArcherValue(item.Target).Value,
-                        new XAttribute("units", GetArcherValue(item.Target).Uom)),
+                    new XElement(nameSpace1 + "target-weight", GetArcherValue(item.Target, _options.IsMetric).Value,
+                        new XAttribute("units", GetArcherValue(item.Target, _options.IsMetric).Uom)),
                     new XElement(nameSpace1 + "measured-weight", GetArcherValue(item.Actual).Value,
-                        new XAttribute("units", GetArcherValue(item.Actual).Uom)),
-                    new XElement(nameSpace1 + "apparent-moisture-percentage", header.Moisture), 
-                    new XElement(nameSpace1 + "absorption-capacity", item.Absorption), 
+                        new XAttribute("units", GetArcherValue(item.Actual, _options.IsMetric).Uom)),
+                    new XElement(nameSpace1 + "apparent-moisture-percentage", header.Moisture),
+                    new XElement(nameSpace1 + "absorption-capacity", item.Absorption),
+                    //*** note specific gravity is currently hard coded to 1.
                     new XElement(nameSpace1 + "specific-gravity", "1")));
 
             }
@@ -216,34 +250,78 @@ namespace VerifiWorker
             return result;
         }
 
-        public ArcherValue GetArcherValue(string value)
+        public ArcherValue GetArcherValue(string value, bool isMetric = true)
         {
-            ArcherValue result = new ArcherValue();
-            if(value.Contains(" l") || value.Contains("l"))
+            if (isMetric)
             {
-                var amount = value.Substring(0, value.IndexOf("l")).Trim();
-                var unit = value.Substring(value.IndexOf("l"), 1);
-                result.Value = Math.Round(decimal.Parse(amount),4);
-                result.Uom = unit;
-            }
+                ArcherValue result = new ArcherValue();
+                if (value.Contains(" l") || value.Contains("l"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("l")).Trim();
+                    var unit = value.Substring(value.IndexOf("l"), 1);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
 
-            if (value.Contains("kg"))
+                if (value.Contains("kg"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("k")).Trim();
+                    var unit = value.Substring(value.IndexOf("k"), 2);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
+
+                if (value.Contains("m3"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("m")).Trim();
+                    var unit = value.Substring(value.IndexOf("m"), 2);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
+
+                return result;
+            }
+            else
             {
-                var amount = value.Substring(0, value.IndexOf("k")).Trim();
-                var unit = value.Substring(value.IndexOf("k"), 2);
-                result.Value = Math.Round(decimal.Parse(amount),4);
-                result.Uom = unit;
-            }
+                ArcherValue result = new ArcherValue();
+                //gal
+                if (value.Contains("g"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("g")).Trim();
+                    var unit = value.Substring(value.IndexOf("g"), 3);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
 
-            if (value.Contains("m3"))
-            {
-                var amount = value.Substring(0, value.IndexOf("m")).Trim();
-                var unit = value.Substring(value.IndexOf("m"), 2);
-                result.Value = Math.Round(decimal.Parse(amount), 4);
-                result.Uom = unit;
-            }
+                //in
+                if (value.Contains("in"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("i")).Trim();
+                    var unit = value.Substring(value.IndexOf("i"), 2);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
 
-            return result;
+                //lb
+                if (value.Contains("lb"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("l")).Trim();
+                    var unit = value.Substring(value.IndexOf("l"), 2);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
+
+                //y3
+                if (value.Contains("y3"))
+                {
+                    var amount = value.Substring(0, value.IndexOf("y")).Trim();
+                    var unit = value.Substring(value.IndexOf("y"), 2);
+                    result.Value = Math.Round(decimal.Parse(amount), 4);
+                    result.Uom = unit;
+                }
+
+                return result;
+            }
         }
 
         public string ExtractField(int fieldNumber, List<DispatchTicketItem> Data)
