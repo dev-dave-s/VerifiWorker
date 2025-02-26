@@ -42,7 +42,7 @@ namespace VerifiWorker
             foreach(var ticket in tickets)
             {
                 //var test = _ticketTracker.IsProcessed(ticket);
-                if (!_ticketTracker.IsProcessed(ticket))
+                if (!_ticketTracker.IsProcessed(ticket) && _options.EnableNewHub)
                 {
                     var ticketResults = results.Where(x => x.TicketId == ticket).ToList();
                     var xml = SerializeXML(ticketResults);
