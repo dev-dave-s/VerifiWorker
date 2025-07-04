@@ -192,7 +192,7 @@ namespace VerifiWorker
             if (_options.IsRegionalPrefix)
             {
                 XElement mixContent = new XElement(nameSpace1 + "mix",
-                    new XElement(nameSpace1 + "mix-code", dispatchTicket.MixCode + "R"));
+                    new XElement(nameSpace1 + "mix-code", "R" + dispatchTicket.MixCode));
                 rootElement.Add(mixContent);
             }
             else
