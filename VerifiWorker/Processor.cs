@@ -150,8 +150,8 @@ namespace VerifiWorker
             XElement driverNameContent = new XElement(nameSpace1 + "driver",
                 new XAttribute("source-system-id", dispatchTicket.DriverNumber), dispatchTicket.DriverName);
 
-            XElement mixContent = new XElement(nameSpace1 + "mix",
-                new XElement(nameSpace1 + "mix-code", dispatchTicket.MixCode));
+            
+
 
             XElement loadsizeContent = new XElement(nameSpace1 + "load-size",
                 new XAttribute("units", GetArcherValue(header.LoadSize, _options.IsMetric).Uom), GetArcherValue(header.LoadSize, _options.IsMetric).Value);
@@ -188,7 +188,20 @@ namespace VerifiWorker
             rootElement.Add(plantContent);
             rootElement.Add(truckContent);
             rootElement.Add(driverNameContent);
-            rootElement.Add(mixContent);
+
+            if (_options.IsRegionalPrefix)
+            {
+                XElement mixContent = new XElement(nameSpace1 + "mix",
+                    new XElement(nameSpace1 + "mix-code", dispatchTicket.MixCode + "R"));
+                rootElement.Add(mixContent);
+            }
+            else
+            {
+                XElement mixContent = new XElement(nameSpace1 + "mix",
+                    new XElement(nameSpace1 + "mix-code", dispatchTicket.MixCode));
+                rootElement.Add(mixContent);
+            }
+            
             rootElement.Add(loadsizeContent);
             rootElement.Add(slumpContent);
             rootElement.Add(batchStartContent);

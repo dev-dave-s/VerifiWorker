@@ -15,5 +15,6 @@ namespace VerifiWorker
         public bool EnableLegacy { get; set; }
         //Set to false for imperial.
         public bool IsMetric { get; set; }
+        public bool IsRegionalPrefix { get; set; }
     }
 }
